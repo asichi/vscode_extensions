@@ -1,0 +1,55 @@
+{
+  "name": "csharp-custom-formatter",
+  "displayName": "C# Custom Formatter",
+  "description": "Custom C# formatter with namespace and using organization",
+  "version": "1.0.0",
+  "publisher": "your-name",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Formatters"
+  ],
+  "activationEvents": [
+    "onLanguage:csharp"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "csharpCustomFormatter.format",
+        "title": "Format with Custom C# Formatter"
+      }
+    ],
+    "configuration": {
+      "title": "C# Custom Formatter",
+      "properties": {
+        "csharpCustomFormatter.sortUsingsEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable sorting of using statements"
+        },
+        "csharpCustomFormatter.sortUsingsOrder": {
+          "type": "string",
+          "default": "System",
+          "description": "Priority namespaces for using statement ordering"
+        },
+        "csharpCustomFormatter.sortUsingsSplitGroups": {
+          "type": "boolean",
+          "default": true,
+          "description": "Add blank lines between different namespace groups"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.80.0",
+    "typescript": "^5.0.0"
+  }
+}
