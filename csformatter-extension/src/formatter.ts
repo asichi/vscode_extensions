@@ -38,7 +38,15 @@ const convertBlockNamespaceToFileScoped = (content: string): string => {
     if (!match) return content;
 
     const [, name, body] = match;
-    return `namespace ${name};\n\n${body.trim()}\n`;
+
+    // Dedent body by removing one indentation level (4 spaces) from each line
+    const dedented = body
+        .split('\n')
+        .map(line => line.replace(/^    /, ''))  // Remove 4 spaces from start of each line
+        .join('\n')
+        .trim();
+
+    return `namespace ${name};\n\n${dedented}\n`;
 };
 
 const cleanRedundantSystemUsing = (lines: string[]): string[] => {
