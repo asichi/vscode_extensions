@@ -92,8 +92,11 @@ export const process = (content: string, options: IFormatConfig): string => {
 
         content = replaceCode(
             content,
-            /(^\s*using\s+[\w\s.=]+;\s*$)+\s*/gm,
+            /^(\s*using\s+[\w\s.=]+;.*(?:\n(?:\s*using\s+[\w\s.=]+;.*|\s*))*)/gm,
             rawBlock => {
+
+                // Remove ALL blank lines from input first
+                rawBlock = rawBlock.replace(/^\s*$/gm, '').replace(/\n\n+/g, '\n');
 
                 let items = rawBlock
                     .split(/[\r\n]+/)
@@ -141,18 +144,21 @@ export const process = (content: string, options: IFormatConfig): string => {
                 });
 
                 if (options.sortUsingsSplitGroups) {
-                    let i = items.length - 1;
-                    const baseNS = /\s*using\s+(\w+).*/;
-                    let lastNS = items[i--].replace(baseNS, '$1');
-                    let nextNS: string;
+                    const grouped: string[] = [];
+                    let lastNS = '';
 
-                    for (; i >= 0; i--) {
-                        nextNS = items[i].replace(baseNS, '$1');
-                        if (nextNS !== lastNS) {
-                            lastNS = nextNS;
-                            items.splice(i + 1, 0, '');
+                    for (let i = 0; i < items.length; i++) {
+                        const currentNS = items[i].replace(/\s*using\s+(\w+).*/, '$1');
+
+                        if (i > 0 && currentNS !== lastNS) {
+                            grouped.push('');  // blank line before new group
                         }
+
+                        grouped.push(items[i]);
+                        lastNS = currentNS;
                     }
+
+                    items = grouped;
                 }
 
                 let result = '';
@@ -163,8 +169,12 @@ export const process = (content: string, options: IFormatConfig): string => {
             }
         );
 
-        // FIX: Ensure blank line after namespace (in case replaceCode consumed it)
+        // FIXED: Handle both namespace and top-level files
+        // Ensure blank line after namespace (if present)
         content = content.replace(/(namespace\s+[^\s{;]+;)\n+(using\s)/, '$1\n\n$2');
+
+        // Ensure blank line after using blocks (for top-level statements)
+        content = content.replace(/(using\s+[^;]+;\n)\n+((?!using\s|namespace\s|^\s*$)\S)/, '$1\n$2');
 
         return content;
     }

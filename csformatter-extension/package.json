@@ -2,8 +2,13 @@
   "name": "csharp-custom-formatter",
   "displayName": "C# Custom Formatter",
   "description": "Custom C# formatter with namespace and using organization",
-  "version": "1.0.0",
-  "publisher": "your-name",
+  "version": "1.0.3",
+  "publisher": "anthony-sichi",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/asichi/vscode-extensions"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.80.0"
   },
