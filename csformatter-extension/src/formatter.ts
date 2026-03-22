@@ -22,7 +22,6 @@ interface ParsedUsing {
 const parseUsing = (line: string): ParsedUsing | null => {
     const trimmed = line.trim();
 
-    // using Alias = Namespace;
     const aliasMatch = trimmed.match(/^using\s+(\w+)\s*=\s*(.+);$/);
     if (aliasMatch) {
         return {
@@ -33,14 +32,12 @@ const parseUsing = (line: string): ParsedUsing | null => {
         };
     }
 
-    // using static Namespace;
     const staticMatch = trimmed.match(/^using\s+static\s+((?:global::)?[\w.:]+);$/);
     if (staticMatch) {
         const ns = staticMatch[1].replace(/^global::/, '').replace(/::/g, '.');
         return { kind: 'static', namespace: ns, raw: line };
     }
 
-    // using Namespace;
     const normalMatch = trimmed.match(/^using\s+((?:global::)?[\w.:]+);$/);
     if (normalMatch) {
         const ns = normalMatch[1].replace(/^global::/, '').replace(/::/g, '.');
@@ -49,8 +46,6 @@ const parseUsing = (line: string): ParsedUsing | null => {
 
     return null;
 };
-
-const getFirstSegment = (ns: string): string => ns.split('.')[0];
 
 const stripInlineComments = (line: string): string => {
     let result = '';
@@ -80,13 +75,7 @@ const stripInlineComments = (line: string): string => {
     return result;
 };
 
-const getNamespaceOrder = (ns: string, ordered: string[]): number => {
-    for (let i = 0; i < ordered.length; i++) {
-        const prefix = ordered[i];
-        if (ns.startsWith(prefix)) return ordered.length - i;
-    }
-    return 0;
-};
+const getFirstSegment = (ns: string): string => ns.split('.')[0];
 
 /* -------------------------------- */
 /* namespace transforms */
@@ -155,148 +144,177 @@ const moveNamespaceToTop = (content: string): string => {
 };
 
 /* -------------------------------- */
+/* using extraction */
+/* -------------------------------- */
+
+const extractUsings = (lines: string[]) => {
+    let start = -1;
+    let end = -1;
+    let inBlockComment = false;
+
+    for (let i = 0; i < lines.length; i++) {
+        const raw = lines[i];
+        const trimmed = stripInlineComments(raw).trim();
+
+        if (!inBlockComment && trimmed.startsWith('/*') && !trimmed.includes('*/')) {
+            inBlockComment = true;
+            continue;
+        }
+        if (inBlockComment) {
+            if (trimmed.includes('*/')) inBlockComment = false;
+            continue;
+        }
+
+        if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#'))
+            continue;
+
+        if (trimmed.startsWith('['))
+            continue;
+
+        if (trimmed.startsWith('namespace ') && trimmed.endsWith(';'))
+            continue;
+
+        if (trimmed.startsWith('namespace '))
+            break;
+
+        if (/^(public|internal|private|protected|sealed|abstract|static|partial)?\s*(class|struct|interface|record|enum)\b/.test(trimmed))
+            break;
+
+        if (trimmed.startsWith('using ')) {
+            if (start === -1) start = i;
+            end = i;
+            continue;
+        }
+
+        // Blank line *between* using groups → include
+        if (start !== -1 && trimmed === '') {
+            // Look ahead: if next non-blank is a using, include this blank
+            let j = i + 1;
+            while (j < lines.length && lines[j].trim() === '') j++;
+
+            if (j < lines.length && lines[j].trim().startsWith('using ')) {
+                end = i;
+                continue;
+            }
+
+            // Otherwise: blank after last using → stop
+            break;
+        }
+
+        if (start !== -1)
+            break;
+
+    }
+
+    return { start, end };
+};
+
+/* -------------------------------- */
+/* using sorting */
+/* -------------------------------- */
+
+const sortUsings = (parsed: ParsedUsing[], order: string, splitGroups: boolean): string[] => {
+    const normal = parsed.filter(u => u.kind === 'normal' || u.kind === 'static');
+    const alias = parsed.filter(u => u.kind === 'alias');
+
+    const uniqNormal = normal.filter(
+        (u, i, arr) => arr.findIndex(x => x.namespace === u.namespace && x.kind === u.kind) === i
+    );
+    const uniqAlias = alias.filter(
+        (u, i, arr) => arr.findIndex(x => x.alias === u.alias && x.namespace === u.namespace) === i
+    );
+
+    const hasSystemSub = uniqNormal.some(u => u.namespace.startsWith('System.'));
+    const filtered = hasSystemSub
+        ? uniqNormal.filter(u => u.namespace !== 'System')
+        : uniqNormal;
+
+    const priority = order.split(' ');
+    const getOrder = (ns: string) => {
+        for (let i = 0; i < priority.length; i++)
+            if (ns.startsWith(priority[i]))
+                return priority.length - i;
+        return 0;
+    };
+
+    filtered.sort((a, b) => {
+        const pa = getOrder(a.namespace);
+        const pb = getOrder(b.namespace);
+        if (pa !== pb) return pb - pa;
+
+        const al = a.namespace.toLowerCase();
+        const bl = b.namespace.toLowerCase();
+        if (al !== bl) return al < bl ? -1 : 1;
+
+        if (a.kind !== b.kind) return a.kind === 'normal' ? -1 : 1;
+
+        return 0;
+    });
+
+    uniqAlias.sort((a, b) => (a.alias || '').localeCompare(b.alias || ''));
+
+    let result: string[] = [];
+    if (splitGroups) {
+        let last = '';
+        for (const u of filtered) {
+            const seg = getFirstSegment(u.namespace);
+            if (last && seg !== last) result.push('');
+            result.push(u.raw);
+            last = seg;
+        }
+    } else {
+        result = filtered.map(u => u.raw);
+    }
+
+    if (uniqAlias.length > 0) {
+        if (result.length > 0) result.push('');
+        result.push(...uniqAlias.map(u => u.raw));
+    }
+
+    return result;
+};
+
+/* -------------------------------- */
 /* main processor */
 /* -------------------------------- */
 
 export const process = (content: string, options: IFormatConfig): string => {
-    try {
-        content = convertBlockNamespaceToFileScoped(content);
-        content = moveNamespaceToTop(content);
+    content = convertBlockNamespaceToFileScoped(content);
+    content = moveNamespaceToTop(content);
 
-        const lines = content.split('\n');
+    const lines = content.split('\n');
 
-        let usingStart = -1;
-        let usingEnd = -1;
-        let inBlockComment = false;
+    const { start, end } = extractUsings(lines);
+    if (start === -1) return content;
 
-        for (let i = 0; i < lines.length; i++) {
-            const raw = lines[i];
-            const stripped = stripInlineComments(raw);
-            const trimmed = stripped.trim();
+    const before = lines.slice(0, start);
+    const usingLines = lines.slice(start, end + 1);
+    const after = lines.slice(end + 1);
 
-            if (!inBlockComment && raw.includes('/*') && !raw.includes('*/')) {
-                inBlockComment = true;
-                continue;
-            }
-            if (inBlockComment) {
-                if (raw.includes('*/')) inBlockComment = false;
-                continue;
-            }
+    const parsed = usingLines
+        .map(parseUsing)
+        .filter((u): u is ParsedUsing => u !== null);
 
-            if (!trimmed || trimmed.startsWith('//') || trimmed.startsWith('#')) continue;
+    const sorted = sortUsings(parsed, options.sortUsingsOrder, options.sortUsingsSplitGroups);
 
-            if (usingStart === -1 && trimmed.startsWith('[')) continue;
+    const out: string[] = [];
+    out.push(...before);
+    out.push(...sorted);
 
-            if (trimmed.startsWith('using ')) {
-                if (usingStart === -1) usingStart = i;
-                usingEnd = i;
-                continue;
-            }
-
-            if (
-                trimmed.startsWith('namespace ') ||
-                /^(public|internal|private|protected|sealed|abstract|static|partial)\s+(class|struct|interface|record|enum)\b/.test(trimmed) ||
-                /^(class|struct|interface|record|enum)\b/.test(trimmed) ||
-                trimmed.startsWith('[')
-            ) {
-                break;
-            }
-
-            if (usingStart !== -1) break;
-        }
-
-        if (usingStart === -1) return content;
-
-        const before = lines.slice(0, usingStart);
-        const usingLines = lines.slice(usingStart, usingEnd + 1);
-        const after = lines.slice(usingEnd + 1);
-
-        const parsed = usingLines
-            .map(parseUsing)
-            .filter((u): u is ParsedUsing => u !== null);
-
-        const normal = parsed.filter(u => u.kind === 'normal' || u.kind === 'static');
-        const alias = parsed.filter(u => u.kind === 'alias');
-
-        const uniqueNormal = normal.filter(
-            (u, i, arr) =>
-                arr.findIndex(x => x.namespace === u.namespace && x.kind === u.kind) === i
-        );
-
-        const uniqueAlias = alias.filter(
-            (u, i, arr) =>
-                arr.findIndex(x => x.alias === u.alias && x.namespace === u.namespace) === i
-        );
-
-        const hasSystemSub = uniqueNormal.some(
-            u => u.kind === 'normal' && u.namespace.startsWith('System.')
-        );
-
-        const filtered = hasSystemSub
-            ? uniqueNormal.filter(u => !(u.kind === 'normal' && u.namespace === 'System'))
-            : uniqueNormal;
-
-        const sortOrder = options.sortUsingsOrder || 'System';
-        const priority = sortOrder.split(' ');
-
-        filtered.sort((a, b) => {
-            const pa = getNamespaceOrder(a.namespace, priority);
-            const pb = getNamespaceOrder(b.namespace, priority);
-            if (pa !== pb) return pb - pa;
-
-            const al = a.namespace.toLowerCase();
-            const bl = b.namespace.toLowerCase();
-            if (al !== bl) return al < bl ? -1 : 1;
-
-            if (a.namespace !== b.namespace) return a.namespace < b.namespace ? -1 : 1;
-
-            if (a.kind !== b.kind) return a.kind === 'normal' ? -1 : 1;
-
-            return 0;
-        });
-
-        uniqueAlias.sort((a, b) => (a.alias || '').localeCompare(b.alias || ''));
-
-        let result: string[] = [];
-
-        if (options.sortUsingsSplitGroups && filtered.length > 0) {
-            let last = '';
-            for (const u of filtered) {
-                const seg = getFirstSegment(u.namespace);
-                if (last && seg !== last) result.push('');
-                result.push(u.raw);
-                last = seg;
-            }
-        } else {
-            result = filtered.map(u => u.raw);
-        }
-
-        if (uniqueAlias.length > 0) {
-            if (result.length > 0) result.push('');
-            result.push(...uniqueAlias.map(u => u.raw));
-        }
-
-        const out: string[] = [];
-        out.push(...before);
-        if (result.length > 0) {
-            out.push(...result);
-            out.push('');
-        }
-        out.push(...after);
-
-        const headerEnd = before.length + result.length + 2;
-        for (let i = 0; i < Math.min(headerEnd, out.length - 2); i++) {
-            while (
-                out[i] === '' &&
-                out[i + 1] === '' &&
-                out[i + 2] === ''
-            ) {
-                out.splice(i + 1, 1);
-            }
-        }
-
-        return out.join('\n');
-    } catch (ex: any) {
-        throw `internal error (please, report to extension owner): ${ex.message}`;
+    // Only add a blank line if the next section does NOT already start with one
+    if (out.length > 0 && out[out.length - 1] !== '' && after[0]?.trim() !== '') {
+        out.push('');
     }
+
+    out.push(...after);
+
+    // Collapse duplicate blank lines
+    for (let i = 0; i < out.length - 1; i++) {
+        if (out[i] === '' && out[i + 1] === '') {
+            out.splice(i + 1, 1);
+            i--;
+        }
+    }
+
+    return out.join('\n');
 };
